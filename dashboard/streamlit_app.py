@@ -11,6 +11,11 @@ import plotly.express as px
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import time
+import sys
+from pathlib import Path
+
+# Ajuste para encontrar os módulos na raiz do repositório
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Import Q-Micro modules
 from core.exchange_simulator import ExchangeSimulator
