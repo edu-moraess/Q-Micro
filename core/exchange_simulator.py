@@ -1,75 +1,78 @@
-from typing import List, Dict
-from .order import Order, OrderSide, OrderType
-from .order_book import OrderBook
-from .matching_engine import MatchingEngine
+"""
+Q-Micro :: core.exchange_simulator
+-------------------------------------
+Top-level façade wiring Order / OrderBook / MatchingEngine together,
+with STOP-order trigger routing and simple market-data/trade-tape access.
+"""
+
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
+from core.order import Order, OrderType, Side
+from core.order_book import OrderBook
+from core.matching_engine import MatchingEngine, Trade
+
 
 class ExchangeSimulator:
-    """
-    Simulates a stock exchange with a limit order book and matching engine.
-    """
+    def __init__(self, symbols: Optional[List[str]] = None):
+        symbols = symbols or ["SYNTH"]
+        self.books: Dict[str, OrderBook] = {s: OrderBook(s) for s in symbols}
+        self.engines: Dict[str, MatchingEngine] = {
+            s: MatchingEngine(self.books[s]) for s in symbols
+        }
+        self._pending_stops: Dict[str, List[Order]] = {s: [] for s in symbols}
 
-    def __init__(self):
-        self.order_book = OrderBook()
-        self.matching_engine = MatchingEngine(self.order_book)
-        self.traders = {}
-        self.order_history = []
-        self.trade_history = []
+    # ---------------------------------------------------------------- #
+    def submit_order(self, symbol: str, order: Order) -> List[Trade]:
+        if symbol not in self.engines:
+            raise KeyError(f"Unknown symbol: {symbol}")
+        if order.order_type == OrderType.STOP:
+            self._pending_stops[symbol].append(order)
+            return []
+        trades = self.engines[symbol].submit(order)
+        self._check_stop_triggers(symbol)
+        return trades
 
-    def add_trader(self, trader_id: str, trader_type: str = "NOISE") -> None:
-        """Register a new trader."""
-        self.traders[trader_id] = {"type": trader_type, "orders": []}
+    def cancel_order(self, symbol: str, order_id: int) -> bool:
+        return self.books[symbol].cancel_order(order_id)
 
-    def submit_order(self, trader_id: str, side: OrderSide, price: float, quantity: int,
-                     order_type: OrderType = OrderType.LIMIT) -> Order:
-        """
-        Submit a new order to the exchange.
+    # ---------------------------------------------------------------- #
+    def _check_stop_triggers(self, symbol: str) -> None:
+        last = self.engines[symbol].last_trade_price()
+        if last is None:
+            return
+        still_pending = []
+        for stop in self._pending_stops[symbol]:
+            triggered = (
+                (stop.side == Side.BUY and last >= stop.stop_price) or
+                (stop.side == Side.SELL and last <= stop.stop_price)
+            )
+            if triggered:
+                live = Order(
+                    side=stop.side,
+                    quantity=stop.remaining_quantity,
+                    order_type=OrderType.MARKET,
+                    trader_id=stop.trader_id,
+                )
+                self.engines[symbol].submit(live)
+            else:
+                still_pending.append(stop)
+        self._pending_stops[symbol] = still_pending
 
-        Args:
-            trader_id: ID of the trader.
-            side: BUY or SELL.
-            price: Order price (for MARKET orders, use 0 or best available).
-            quantity: Order quantity.
-            order_type: Type of order (LIMIT, MARKET, etc.).
+    # ---------------------------------------------------------------- #
+    def market_data(self, symbol: str, depth_levels: int = 5) -> dict:
+        book = self.books[symbol]
+        return {
+            "symbol": symbol,
+            "best_bid": book.best_bid(),
+            "best_ask": book.best_ask(),
+            "mid": book.mid_price(),
+            "spread": book.spread(),
+            "spread_bps": book.spread_bps(),
+            "ofi": book.order_flow_imbalance(depth_levels),
+            "depth": book.depth(depth_levels),
+        }
 
-        Returns:
-            The submitted Order object.
-        """
-        if trader_id not in self.traders:
-            self.add_trader(trader_id)
-
-        order = Order(
-            trader_id=trader_id,
-            side=side,
-            price=price,
-            quantity=quantity,
-            order_type=order_type,
-        )
-
-        self.traders[trader_id]["orders"].append(order)
-        self.order_history.append(order)
-
-        if order_type == OrderType.MARKET:
-            self.matching_engine.process_market_order(side, quantity, trader_id)
-        else:
-            self.matching_engine.match_order(order)
-
-        return order
-
-    def get_order_book_state(self) -> Dict:
-        """Return the current state of the order book."""
-        return self.order_book.get_order_book_state()
-
-    def get_trade_history(self, limit: int = 100) -> List[Dict]:
-        """Return the last N trades."""
-        return self.order_book.trades[-limit:]
-
-    def get_order_history(self, limit: int = 100) -> List[Order]:
-        """Return the last N orders."""
-        return self.order_history[-limit:]
-
-    def reset(self) -> None:
-        """Reset the exchange state."""
-        self.order_book = OrderBook()
-        self.matching_engine = MatchingEngine(self.order_book)
-        self.order_history = []
-        self.trade_history = []
+    def trade_tape(self, symbol: str) -> List[dict]:
+        return self.engines[symbol].trades_to_records()
