@@ -1,139 +1,125 @@
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
-import bisect
-from .order import Order, OrderSide, OrderType
+"""
+Q-Micro :: core.order_book
+----------------------------
+Limit Order Book (LOB) with price-time priority.
 
-@dataclass
+Design:
+  - self._bids / self._asks: price -> deque[Order]  (FIFO within a level)
+  - self._bid_heap: max-heap of active bid prices (stored negated)
+  - self._ask_heap: min-heap of active ask prices
+  - lazy deletion: stale heap entries are skipped/popped on read
+"""
+
+from __future__ import annotations
+
+import heapq
+from collections import deque, defaultdict
+from typing import Deque, Dict, List, Optional, Tuple
+
+from core.order import Order, Side
+
+
 class OrderBook:
-    """
-    Represents a Limit Order Book (LOB) with buy and sell sides.
+    def __init__(self, symbol: str = "SYNTH"):
+        self.symbol = symbol
+        self._bids: Dict[float, Deque[Order]] = defaultdict(deque)
+        self._asks: Dict[float, Deque[Order]] = defaultdict(deque)
+        self._bid_heap: List[float] = []   # negated prices (max-heap)
+        self._ask_heap: List[float] = []   # prices (min-heap)
+        self._orders_index: Dict[int, Order] = {}
 
-    Attributes:
-        buy_orders: Dict mapping price levels to lists of buy orders (sorted descending).
-        sell_orders: Dict mapping price levels to lists of sell orders (sorted ascending).
-        trades: List of executed trades (for history).
-    """
-    buy_orders: Dict[float, List[Order]] = field(default_factory=dict)
-    sell_orders: Dict[float, List[Order]] = field(default_factory=dict)
-    trades: List[Dict] = field(default_factory=list)
-
-    def __post_init__(self):
-        self.buy_orders = {}
-        self.sell_orders = {}
-        self.trades = []
-
-    def add_order(self, order: Order) -> None:
-        """Add a new order to the book."""
-        if order.is_buy():
-            target = self.buy_orders
-        else:
-            target = self.sell_orders
-
-        if order.price not in target:
-            target[order.price] = []
-
-        bisect.insort(target[order.price], order, key=lambda x: x.timestamp)
-
-    def cancel_order(self, order_id: str) -> bool:
-        """Cancel an order by its ID. Returns True if successful."""
-        for price_level in list(self.buy_orders.keys()):
-            for i, order in enumerate(self.buy_orders[price_level]):
-                if order.order_id == order_id and order.status == "OPEN":
-                    order.cancel()
-                    self.buy_orders[price_level].pop(i)
-                    if not self.buy_orders[price_level]:
-                        del self.buy_orders[price_level]
-                    return True
-
-        for price_level in list(self.sell_orders.keys()):
-            for i, order in enumerate(self.sell_orders[price_level]):
-                if order.order_id == order_id and order.status == "OPEN":
-                    order.cancel()
-                    self.sell_orders[price_level].pop(i)
-                    if not self.sell_orders[price_level]:
-                        del self.sell_orders[price_level]
-                    return True
-
-        return False
-
-    def get_best_bid(self) -> Optional[float]:
-        """Return the best bid price (highest buy price)."""
-        if not self.buy_orders:
-            return None
-        return max(self.buy_orders.keys())
-
-    def get_best_ask(self) -> Optional[float]:
-        """Return the best ask price (lowest sell price)."""
-        if not self.sell_orders:
-            return None
-        return min(self.sell_orders.keys())
-
-    def get_mid_price(self) -> Optional[float]:
-        """Return the mid price between best bid and ask."""
-        best_bid = self.get_best_bid()
-        best_ask = self.get_best_ask()
-        if best_bid is None or best_ask is None:
-            return None
-        return (best_bid + best_ask) / 2
-
-    def get_spread(self) -> Optional[float]:
-        """Return the spread (best ask - best bid)."""
-        best_bid = self.get_best_bid()
-        best_ask = self.get_best_ask()
-        if best_bid is None or best_ask is None:
-            return None
-        return best_ask - best_bid
-
-    def get_depth(self, side: OrderSide, levels: int = 5) -> List[Tuple[float, int]]:
-        """
-        Return the depth of the order book for a given side.
-
-        Args:
-            side: BUY or SELL.
-            levels: Number of price levels to return.
-
-        Returns:
-            List of (price, total_quantity) tuples, sorted by price.
-        """
-        if side == OrderSide.BUY:
-            price_levels = sorted(self.buy_orders.keys(), reverse=True)
-        else:
-            price_levels = sorted(self.sell_orders.keys())
-
-        depth = []
-        for price in price_levels[:levels]:
-            orders = self.buy_orders[price] if side == OrderSide.BUY else self.sell_orders[price]
-            total_quantity = sum(order.remaining_quantity() for order in orders)
-            depth.append((price, total_quantity))
-
-        return depth
-
-    def get_order_book_state(self) -> Dict:
-        """Return the current state of the order book."""
-        return {
-            "best_bid": self.get_best_bid(),
-            "best_ask": self.get_best_ask(),
-            "mid_price": self.get_mid_price(),
-            "spread": self.get_spread(),
-            "buy_depth": self.get_depth(OrderSide.BUY),
-            "sell_depth": self.get_depth(OrderSide.SELL),
-        }
-
-    def __str__(self) -> str:
-        """String representation of the order book."""
-        buy_side = "\n".join(
-            [f"{price:8.2f} | {sum(o.remaining_quantity() for o in orders):6d}"
-             for price, orders in sorted(self.buy_orders.items(), reverse=True)[:5]]
+    # ---------------------------------------------------------------- #
+    # Mutation
+    # ---------------------------------------------------------------- #
+    def add_limit_order(self, order: Order) -> None:
+        if order.price is None:
+            raise ValueError("add_limit_order requires a priced order.")
+        book, heap, sign = (
+            (self._bids, self._bid_heap, -1.0) if order.side == Side.BUY
+            else (self._asks, self._ask_heap, 1.0)
         )
-        sell_side = "\n".join(
-            [f"{price:8.2f} | {sum(o.remaining_quantity() for o in orders):6d}"
-             for price, orders in sorted(self.sell_orders.items())[:5]]
-        )
+        if order.price not in book:
+            heapq.heappush(heap, sign * order.price)
+        book[order.price].append(order)
+        self._orders_index[order.order_id] = order
 
+    def cancel_order(self, order_id: int) -> bool:
+        order = self._orders_index.get(order_id)
+        if order is None or not order.is_active:
+            return False
+        order.cancel()
+        book = self._bids if order.side == Side.BUY else self._asks
+        level = book.get(order.price)
+        if level and order in level:
+            level.remove(order)
+            if not level:
+                del book[order.price]
+        return True
+
+    # ---------------------------------------------------------------- #
+    # Top-of-book (lazy deletion of stale/empty levels)
+    # ---------------------------------------------------------------- #
+    def best_bid(self) -> Optional[float]:
+        while self._bid_heap:
+            price = -self._bid_heap[0]
+            if price in self._bids and self._bids[price]:
+                return price
+            heapq.heappop(self._bid_heap)
+        return None
+
+    def best_ask(self) -> Optional[float]:
+        while self._ask_heap:
+            price = self._ask_heap[0]
+            if price in self._asks and self._asks[price]:
+                return price
+            heapq.heappop(self._ask_heap)
+        return None
+
+    def mid_price(self) -> Optional[float]:
+        bid, ask = self.best_bid(), self.best_ask()
+        return None if (bid is None or ask is None) else (bid + ask) / 2.0
+
+    def spread(self) -> Optional[float]:
+        bid, ask = self.best_bid(), self.best_ask()
+        return None if (bid is None or ask is None) else ask - bid
+
+    def spread_bps(self) -> Optional[float]:
+        s, m = self.spread(), self.mid_price()
+        return None if (s is None or not m) else 10_000.0 * s / m
+
+    # ---------------------------------------------------------------- #
+    # Depth / imbalance
+    # ---------------------------------------------------------------- #
+    def depth(self, levels: int = 5) -> Dict[str, List[Tuple[float, float]]]:
+        bid_prices = sorted({p for p in self._bids if self._bids[p]}, reverse=True)[:levels]
+        ask_prices = sorted({p for p in self._asks if self._asks[p]})[:levels]
+        bids = [(p, sum(o.remaining_quantity for o in self._bids[p])) for p in bid_prices]
+        asks = [(p, sum(o.remaining_quantity for o in self._asks[p])) for p in ask_prices]
+        return {"bids": bids, "asks": asks}
+
+    def order_flow_imbalance(self, levels: int = 5) -> Optional[float]:
+        """OFI = (BuyVolume - SellVolume) / (BuyVolume + SellVolume), top-N levels."""
+        d = self.depth(levels)
+        buy_vol = sum(q for _, q in d["bids"])
+        sell_vol = sum(q for _, q in d["asks"])
+        total = buy_vol + sell_vol
+        return None if total == 0 else (buy_vol - sell_vol) / total
+
+    def queue_position(self, order_id: int) -> Optional[int]:
+        order = self._orders_index.get(order_id)
+        if order is None:
+            return None
+        book = self._bids if order.side == Side.BUY else self._asks
+        level = book.get(order.price)
+        if not level:
+            return None
+        for i, o in enumerate(level):
+            if o.order_id == order_id:
+                return i
+        return None
+
+    def __repr__(self) -> str:  # pragma: no cover
         return (
-            f"=== ORDER BOOK ===\n"
-            f"BID SIDE:\n{buy_side}\n\n"
-            f"ASK SIDE:\n{sell_side}\n"
-            f"Best Bid: {self.get_best_bid():.2f} | Best Ask: {self.get_best_ask():.2f} | "
-            f"Mid: {self.get_mid_price():.2f} | Spread: {self.get_spread():.2f}"
+            f"OrderBook({self.symbol}, best_bid={self.best_bid()}, "
+            f"best_ask={self.best_ask()}, spread={self.spread()})"
         )
