@@ -138,10 +138,28 @@ class SyntheticMarketGenerator:
     def add_agent(self, agent: Agent) -> None:
         self.agents.append(agent)
 
+    def populate_default_agents(self) -> None:
+        """Adds a reasonable default population if none was configured manually.
+        Called automatically by MarketSimulator; safe to call again (idempotent
+        only if self.agents is still empty — otherwise it appends more agents)."""
+        self.add_agent(NoiseTrader(trader_id="noise_1"))
+        self.add_agent(NoiseTrader(trader_id="noise_2"))
+        self.add_agent(NoiseTrader(trader_id="noise_3"))
+        self.add_agent(InformedTrader(trader_id="informed_1", signal_strength=0.5))
+        self.add_agent(MarketMakerAgent(trader_id="mm_1"))
+        self.add_agent(InstitutionalTrader(
+            trader_id="inst_1", side=Side.SELL, total_qty=3000, slices=50))
+
     def set_regime(self, regime: Regime) -> None:
         self.regime = regime
 
     def step(self) -> dict:
+        if not self.agents:
+            raise RuntimeError(
+                "SyntheticMarketGenerator has no agents. Call add_agent(...) "
+                "or populate_default_agents() before step()/run()."
+            )
+
         params = REGIME_PARAMS[self.regime]
         self.fair_value *= (1 + self.rng.gauss(params.drift, params.vol))
         for agent in self.agents:
@@ -149,8 +167,8 @@ class SyntheticMarketGenerator:
                 agent.set_fair_value(self.fair_value)
 
         mid = self.ex.market_data(self.symbol)["mid"] or self.fair_value
-        n_active = self.rng.poisson(params.arrival_rate) if hasattr(self.rng, "poisson") else int(params.arrival_rate)
-        for _ in range(max(1, n_active)):
+        n_active = max(1, round(self.rng.gauss(params.arrival_rate, params.arrival_rate ** 0.5)))
+        for _ in range(n_active):
             agent = self.rng.choice(self.agents)
             for order in agent.act(self.ex, self.symbol, mid, self.rng):
                 trades = self.ex.submit_order(self.symbol, order)
