@@ -25,3 +25,41 @@ Q-Micro/
 ├── tests/                 # Testes unitários
 ├── requirements.txt       # Dependências
 └── README.md              # Documentação
+
+Como Começar
+1. Instalar dependências
+pip install -r requirements.txt
+2. Executar um teste básico
+from core.exchange_simulator import ExchangeSimulator
+from core.order import OrderSide, OrderType
+
+exchange = ExchangeSimulator()
+exchange.submit_order("TRADER_1", OrderSide.BUY, 100.0, 500, OrderType.LIMIT)
+exchange.submit_order("TRADER_2", OrderSide.SELL, 100.5, 300, OrderType.LIMIT)
+exchange.submit_order("TRADER_3", OrderSide.BUY, 0.0, 200, OrderType.MARKET)
+
+print(exchange.get_order_book_state())
+3. Iniciar o dashboard (Streamlit)
+streamlit run dashboard/streamlit_app.py
+📚 Documentação
+- Arquitetura do Projeto (em breve)
+- Modelos de Microestrutura (em breve)
+- Algoritmos de Execução (em breve)
+🤝 Contribuições
+Contribuições são bem-vindas! Abra um Pull Request ou report um Issue.
+📜 Licença
+MIT
+
+---
+
+---
+
+### **📁 `data/`**
+---
+
+#### **1. `data/__init__.py`**
+```python
+"""
+Data module for Q-Micro.
+Includes market data loaders and synthetic data generators.
+"""
