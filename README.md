@@ -1,65 +1,46 @@
 # Q-Micro: Real-Time Market Microstructure & Execution Research Engine
 
-> **Status:** Em desenvolvimento
-> **Autor:** Eduardo Moraes
-> **Foco:** Simulação de microestrutura de mercado para pesquisa em HFT e execução ótima.
+Research infrastructure to study price formation, liquidity, order impact,
+execution costs, order-book dynamics, and institutional execution algorithms —
+built as a self-contained matching-engine simulator, not a price predictor.
 
----
+## Status
 
-## 📌 Descrição
-O **Q-Micro** é um **simulador de microestrutura de mercado** projetado para pesquisa em **High-Frequency Trading (HFT)** e **execução ótima de ordens**. O projeto implementa um **Limit Order Book (LOB)**, **Matching Engine**, **modelos de microestrutura**, **algoritmos de execução institucional** e um **agente de Reinforcement Learning (RL)** para otimização de estratégias.
+| Phase | Module | Status |
+|---|---|---|
+| 1-2 | `core/order.py`, `core/order_book.py` | ✅ Done |
+| 3 | `core/matching_engine.py`, `core/exchange_simulator.py` | ✅ Done |
+| 4 | `data/synthetic_generator.py` (noise / informed / MM / institutional agents) | ⏳ Pending |
+| 5 | `microstructure/` (spread, Kyle λ, Amihud, VPIN, OFI) | ⏳ Pending |
+| 6 | `execution/` (TWAP, VWAP, Implementation Shortfall) | ⏳ Pending |
+| 7 | RL execution agent (PyTorch, DQN/PPO) | ⏳ Pending |
+| 8 | Performance optimization (Numba/Polars) | ⏳ Pending |
+| 9 | `dashboard/streamlit_app.py` | ⏳ Pending |
+| 10 | Research report | ⏳ Pending |
 
----
+## Architecture
 
-## 🛠️ Estrutura do Projeto
-```text
-Q-Micro/
-├── data/                  # Loaders e geradores de dados
-├── core/                  # Núcleo: Order, OrderBook, MatchingEngine, ExchangeSimulator
-├── microstructure/        # Modelos: Spread, Liquidez, Impacto, VPIN, Kyle Lambda
-├── execution/             # Algoritmos: TWAP, VWAP, Implementation Shortfall
-├── strategies/            # Estratégias: Market Maker, Liquidity Provider
-├── simulation/            # Simuladores: Market Simulator, Monte Carlo
-├── analytics/             # Métricas: Performance, Risco
-├── dashboard/             # Visualização: Streamlit App
-├── tests/                 # Testes unitários
-├── requirements.txt       # Dependências
-└── README.md              # Documentação
+Price-time priority matching engine with lazy-deleted heap-based order book
+(O(log n) best-bid/ask, O(1) amortized top-of-book reads). No external
+dependencies for the core engine — pure stdlib (`heapq`, `dataclasses`,
+`enum`, `collections`).
 
-Como Começar
-1. Instalar dependências
-pip install -r requirements.txt
-2. Executar um teste básico
+## Quickstart
+
+\`\`\`python
+from core.order import Order, Side, OrderType
 from core.exchange_simulator import ExchangeSimulator
-from core.order import OrderSide, OrderType
 
-exchange = ExchangeSimulator()
-exchange.submit_order("TRADER_1", OrderSide.BUY, 100.0, 500, OrderType.LIMIT)
-exchange.submit_order("TRADER_2", OrderSide.SELL, 100.5, 300, OrderType.LIMIT)
-exchange.submit_order("TRADER_3", OrderSide.BUY, 0.0, 200, OrderType.MARKET)
+ex = ExchangeSimulator(symbols=["SYNTH"])
+ex.submit_order("SYNTH", Order(side=Side.BUY, price=100.20, quantity=500))
+ex.submit_order("SYNTH", Order(side=Side.SELL, price=100.30, quantity=700))
+trades = ex.submit_order("SYNTH", Order(side=Side.BUY, price=100.30, quantity=300))
 
-print(exchange.get_order_book_state())
-3. Iniciar o dashboard (Streamlit)
-streamlit run dashboard/streamlit_app.py
-📚 Documentação
-- Arquitetura do Projeto (em breve)
-- Modelos de Microestrutura (em breve)
-- Algoritmos de Execução (em breve)
-🤝 Contribuições
-Contribuições são bem-vindas! Abra um Pull Request ou report um Issue.
-📜 Licença
-MIT
+print(ex.market_data("SYNTH"))
+\`\`\`
 
----
+## Limitations
 
----
-
-### **📁 `data/`**
----
-
-#### **1. `data/__init__.py`**
-```python
-"""
-Data module for Q-Micro.
-Includes market data loaders and synthetic data generators.
-"""
+Research/educational simulator. No real market data feed, no latency
+modeling of physical network/exchange colocation, simplified STOP-order
+triggering (last-trade based, not full book-sweep).
