@@ -1,116 +1,35 @@
-"""
-TWAP (Time-Weighted Average Price) Execution Algorithm for Q-Micro.
-"""
+"""Q-Micro :: execution.twap — Time-Weighted Average Price scheduler."""
 
-import numpy as np
-import pandas as pd
-from typing import List, Dict, Optional, Union, Tuple
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from __future__ import annotations
+from typing import List
+from core.order import Order, Side, OrderType
 
 
-@dataclass
-class TWAP:
-    """
-    Implements the TWAP execution algorithm.
-    
-    TWAP divides a large order into equal-sized slices over a specified time horizon.
-    The goal is to minimize market impact by spreading the order evenly in time.
-    
-    Attributes:
-        total_quantity: Total quantity to execute.
-        start_time: Start time of the execution.
-        end_time: End time of the execution.
-        n_slices: Number of slices to divide the order into.
-    """
-    total_quantity: int
-    start_time: datetime
-    end_time: datetime
-    n_slices: int = 10
-    
-    def __post_init__(self):
-        if self.end_time <= self.start_time:
-            raise ValueError("end_time must be after start_time")
-        if self.n_slices <= 0:
-            raise ValueError("n_slices must be positive")
-    
-    def get_slice_times(self) -> List[datetime]:
-        """Return the timestamps for each execution slice."""
-        delta = (self.end_time - self.start_time) / self.n_slices
-        return [self.start_time + i * delta for i in range(1, self.n_slices + 1)]
-    
-    def get_slice_quantity(self) -> int:
-        """Return the quantity for each slice."""
-        return self.total_quantity // self.n_slices
-    
-    def get_execution_plan(self) -> List[Dict]:
-        """
-        Generate the full execution plan.
-        
-        Returns:
-            List of dicts with keys: "time", "quantity", "side".
-        """
-        slice_quantity = self.get_slice_quantity()
-        slice_times = self.get_slice_times()
-        
-        execution_plan = []
-        remaining_quantity = self.total_quantity
-        
-        for i, time in enumerate(slice_times):
-            if i == self.n_slices - 1:
-                # Last slice: execute remaining quantity
-                quantity = remaining_quantity
-            else:
-                quantity = slice_quantity
-            
-            execution_plan.append({
-                "time": time,
-                "quantity": quantity,
-                "side": "BUY",  # Default; can be overridden
-            })
-            remaining_quantity -= quantity
-        
-        return execution_plan
-    
-    def execute(
-        self,
-        exchange_simulator,
-        side: str = "BUY",
-        price: Optional[float] = None,
-    ) -> List[Dict]:
-        """
-        Execute the TWAP strategy on a given exchange simulator.
-        
-        Args:
-            exchange_simulator: Instance of ExchangeSimulator.
-            side: "BUY" or "SELL".
-            price: Limit price (for LIMIT orders; None for MARKET orders).
-        
-        Returns:
-            List of trade executions.
-        """
-        from core.order import OrderSide, OrderType
-        
-        side_enum = OrderSide.BUY if side == "BUY" else OrderSide.SELL
-        execution_plan = self.get_execution_plan()
-        trades = []
-        
-        for slice in execution_plan:
-            if price is None:
-                # Market order
-                trade = exchange_simulator.matching_engine.process_market_order(
-                    side=side_enum,
-                    quantity=slice["quantity"],
-                    trader_id="TWAP_AGENT",
-                )
-            else:
-                # Limit order
-                trade = exchange_simulator.matching_engine.process_limit_order(
-                    side=side_enum,
-                    price=price,
-                    quantity=slice["quantity"],
-                    trader_id="TWAP_AGENT",
-                )
-            trades.extend(trade)
-        
-        return trades
+def twap_schedule(total_qty: float, n_slices: int, side: Side, trader_id: str = "twap_algo") -> List[Order]:
+    """Splits a parent order into n_slices equal MARKET child orders, one per interval."""
+    if n_slices <= 0:
+        raise ValueError("n_slices must be positive.")
+    slice_qty = total_qty / n_slices
+    return [
+        Order(side=side, quantity=slice_qty, order_type=OrderType.MARKET, trader_id=trader_id)
+        for _ in range(n_slices)
+    ]
+
+
+class TWAPExecutor:
+    """Stateful TWAP executor: call .next_slice() once per scheduling interval."""
+
+    def __init__(self, total_qty: float, n_slices: int, side: Side, trader_id: str = "twap_algo"):
+        self.side = side
+        self.trader_id = trader_id
+        self.slice_qty = total_qty / n_slices
+        self.slices_left = n_slices
+        self.executed = 0.0
+
+    def next_slice(self) -> Order:
+        if self.slices_left <= 0:
+            raise StopIteration("TWAP schedule complete.")
+        self.slices_left -= 1
+        self.executed += self.slice_qty
+        return Order(side=self.side, quantity=self.slice_qty,
+                      order_type=OrderType.MARKET, trader_id=self.trader_id)
