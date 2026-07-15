@@ -384,4 +384,4 @@ with tabs[6]:
         col3.metric("CPU", f"{perf['cpu_percent']:.1f}%")
         col4.metric("Memória", f"{perf['memory_percent']:.1f}%")
         st.write("**Contagem de eventos:**")
-        st.json(perf['event_counts'])
+        st.json(perf['event_counts']) 
