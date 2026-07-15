@@ -95,11 +95,9 @@ if "exchange" not in st.session_state:
     st.session_state.generator_error = None
     # Tenta criar o gerador sintético de forma resiliente
     try:
-        # Tenta com argumentos nomeados
         st.session_state.synthetic_generator = SyntheticMarketGenerator(n_traders=10, initial_price=100.0)
     except TypeError:
         try:
-            # Tenta sem argumentos (construtor padrão)
             st.session_state.synthetic_generator = SyntheticMarketGenerator()
         except Exception as e:
             st.session_state.generator_error = str(e)
@@ -393,28 +391,42 @@ with tabs[4]:
     st.header("Simulation Control")
     if st.session_state.synthetic_generator is None:
         st.warning(f"Gerador sintético não disponível: {st.session_state.generator_error}")
-        st.stop()
-    if st.button("🎲 Generate Synthetic Orders"):
-        n_orders = st.slider("Number of Orders", 10, 1000, 100, key="n_orders")
-        try:
-            # Tenta recriar o gerador com os parâmetros da sidebar, mas se falhar usa o existente
-            st.session_state.synthetic_generator = SyntheticMarketGenerator(n_traders=n_traders, initial_price=initial_price)
-        except TypeError:
-            # Se não aceitar argumentos, mantém o que já existe (ou tenta sem argumentos)
+    else:
+        if st.button("🎲 Generate Synthetic Orders"):
+            n_orders = st.slider("Number of Orders", 10, 1000, 100, key="n_orders")
             try:
-                st.session_state.synthetic_generator = SyntheticMarketGenerator()
+                # Tenta recriar o gerador com os parâmetros da sidebar
+                st.session_state.synthetic_generator = SyntheticMarketGenerator(n_traders=n_traders, initial_price=initial_price)
+            except TypeError:
+                try:
+                    st.session_state.synthetic_generator = SyntheticMarketGenerator()
+                except Exception:
+                    pass
             except Exception:
                 pass
-        except Exception:
-            pass  # mantém o anterior
-        orders = st.session_state.synthetic_generator.generate_order_flow(n_orders)
-        for order in orders:
-            side = Side.BUY if order["side"] == "BUY" else Side.SELL
-            st.session_state.exchange.submit_order(
-                trader_id=order["trader_id"], side=side,
-                price=order["price"], quantity=order["quantity"], order_type=OrderType.LIMIT
-            )
-        st.success(f"✅ Generated and submitted {n_orders} synthetic orders!")
+
+            # Tenta encontrar um método de geração de ordens disponível
+            if hasattr(st.session_state.synthetic_generator, 'generate_order_flow'):
+                orders = st.session_state.synthetic_generator.generate_order_flow(n_orders)
+            elif hasattr(st.session_state.synthetic_generator, 'generate'):
+                orders = st.session_state.synthetic_generator.generate(n_orders)
+            elif hasattr(st.session_state.synthetic_generator, 'run'):
+                orders = st.session_state.synthetic_generator.run(n_orders)
+            else:
+                orders = None
+                st.warning(
+                    "O gerador sintético não possui um método reconhecido para gerar ordens. "
+                    "Métodos esperados: generate_order_flow, generate, run."
+                )
+
+            if orders is not None:
+                for order in orders:
+                    side = Side.BUY if order["side"] == "BUY" else Side.SELL
+                    st.session_state.exchange.submit_order(
+                        trader_id=order["trader_id"], side=side,
+                        price=order["price"], quantity=order["quantity"], order_type=OrderType.LIMIT
+                    )
+                st.success(f"✅ Generated and submitted {len(orders)} synthetic orders!")
 
     if use_rl_agent and st.button("🤖 Run RL Agent"):
         from strategies.rl_environment import TradingEnvironment
