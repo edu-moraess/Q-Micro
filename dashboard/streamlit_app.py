@@ -50,18 +50,41 @@ except ImportError:
         st.session_state.perf_monitor = None
 
 # ----------------------------------------------------------------------
-# Imports do Q-Micro original
+# Imports do Q-Micro – módulos principais
 from core.exchange_simulator import ExchangeSimulator
 from core.order import Side, OrderType
-# Removida a linha: from microstructure.liquidity import OrderFlowImbalance, AmihudIlliquidity
-from microstructure.spread_model import SpreadModel
-from microstructure.kyle_lambda import KyleLambda
-from microstructure.vpin import VPIN
-from execution.twap import TWAP
-from execution.vwap import VWAP
-from execution.implementation_shortfall import ImplementationShortfall
-from execution.optimal_execution import OptimalExecution
 from data.synthetic_generator import SyntheticMarketGenerator
+
+# ----------------------------------------------------------------------
+# Módulos de microestrutura (importação condicional)
+try:
+    from microstructure.spread_model import SpreadModel
+    SPREAD_AVAILABLE = True
+except ImportError:
+    SPREAD_AVAILABLE = False
+
+try:
+    from microstructure.kyle_lambda import KyleLambda
+    KYLE_AVAILABLE = True
+except ImportError:
+    KYLE_AVAILABLE = False
+
+try:
+    from microstructure.vpin import VPIN
+    VPIN_AVAILABLE = True
+except ImportError:
+    VPIN_AVAILABLE = False
+
+# ----------------------------------------------------------------------
+# Algoritmos de execução (importação condicional)
+try:
+    from execution.twap import TWAP
+    from execution.vwap import VWAP
+    from execution.implementation_shortfall import ImplementationShortfall
+    from execution.optimal_execution import OptimalExecution
+    EXECUTION_AVAILABLE = True
+except ImportError:
+    EXECUTION_AVAILABLE = False
 
 # ----------------------------------------------------------------------
 st.set_page_config(page_title="Q-Micro Terminal", layout="wide")
@@ -215,21 +238,30 @@ with tabs[1]:
 # ======================================================================
 with tabs[2]:
     st.header("Market Impact Analysis")
+
+    if not KYLE_AVAILABLE or not VPIN_AVAILABLE:
+        st.warning("Algumas métricas de microestrutura não estão disponíveis (módulos ausentes).")
+    
     if len(st.session_state.exchange.order_book.trades) > 0:
         trades_df = pd.DataFrame(st.session_state.exchange.order_book.trades)
         buy_volume = trades_df[trades_df["buyer"] == "RL_AGENT"]["quantity"].sum()
         sell_volume = trades_df[trades_df["seller"] == "RL_AGENT"]["quantity"].sum()
         ofi = (buy_volume - sell_volume) / (buy_volume + sell_volume + 1e-6)
 
-        vpin = VPIN(bucket_size=10)
-        vpin_value = vpin.compute_vpin_from_trades(st.session_state.exchange.order_book.trades)
-        kyle = KyleLambda(lambda_=0.01)
-        kyle_impact = kyle.estimate_impact(ofi)
+        vpin_value = None
+        if VPIN_AVAILABLE:
+            vpin = VPIN(bucket_size=10)
+            vpin_value = vpin.compute_vpin_from_trades(st.session_state.exchange.order_book.trades)
+
+        kyle_impact = None
+        if KYLE_AVAILABLE:
+            kyle = KyleLambda(lambda_=0.01)
+            kyle_impact = kyle.estimate_impact(ofi)
 
         col1, col2, col3 = st.columns(3)
         col1.metric("Order Flow Imbalance", f"{ofi:.4f}")
-        col2.metric("VPIN", f"{vpin_value:.4f}")
-        col3.metric("Kyle's Lambda Impact", f"{kyle_impact:.4f}")
+        col2.metric("VPIN", f"{vpin_value:.4f}" if vpin_value is not None else "N/A")
+        col3.metric("Kyle's Lambda Impact", f"{kyle_impact:.4f}" if kyle_impact is not None else "N/A")
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=trades_df.index, y=trades_df["price"], mode="lines+markers", name="Trade Price"))
@@ -249,55 +281,58 @@ with tabs[2]:
 # ======================================================================
 with tabs[3]:
     st.header("Execution Algorithm Analysis")
-    if st.button("🚀 Run Execution Algorithm"):
-        start_time = datetime.now()
-        end_time = start_time + timedelta(minutes=30)
+    if not EXECUTION_AVAILABLE:
+        st.warning("Algoritmos de execução não disponíveis (módulos ausentes).")
+    else:
+        if st.button("🚀 Run Execution Algorithm"):
+            start_time = datetime.now()
+            end_time = start_time + timedelta(minutes=30)
 
-        if execution_algorithm == "TWAP":
-            twap = TWAP(total_quantity=total_quantity, start_time=start_time, end_time=end_time, n_slices=n_slices)
-            trades = twap.execute(st.session_state.exchange, side="BUY")
-            st.session_state.trade_history = trades
-        elif execution_algorithm == "VWAP":
-            volume_profile = [100 + i * 10 for i in range(n_slices)]
-            vwap = VWAP(total_quantity=total_quantity, start_time=start_time, end_time=end_time, volume_profile=volume_profile)
-            trades = vwap.execute(st.session_state.exchange, side="BUY")
-            st.session_state.trade_history = trades
-        elif execution_algorithm == "Implementation Shortfall":
-            is_strategy = ImplementationShortfall(
-                total_quantity=total_quantity, start_time=start_time, end_time=end_time,
-                decision_price=st.session_state.exchange.get_order_book_state()["mid_price"] or 100.0,
-                lambda_=0.01, sigma=volatility, risk_aversion=0.5, n_slices=n_slices
-            )
-            trades = is_strategy.execute(st.session_state.exchange, side="BUY")
-            st.session_state.trade_history = trades
-        elif execution_algorithm == "Optimal Execution":
-            oe_strategy = OptimalExecution(
-                total_quantity=total_quantity, start_time=start_time, end_time=end_time,
-                decision_price=st.session_state.exchange.get_order_book_state()["mid_price"] or 100.0,
-                sigma=volatility, lambda_=0.01, eta=0.005, risk_aversion=0.5, n_slices=n_slices
-            )
-            trades = oe_strategy.execute(st.session_state.exchange, side="BUY")
-            st.session_state.trade_history = trades
+            if execution_algorithm == "TWAP":
+                twap = TWAP(total_quantity=total_quantity, start_time=start_time, end_time=end_time, n_slices=n_slices)
+                trades = twap.execute(st.session_state.exchange, side="BUY")
+                st.session_state.trade_history = trades
+            elif execution_algorithm == "VWAP":
+                volume_profile = [100 + i * 10 for i in range(n_slices)]
+                vwap = VWAP(total_quantity=total_quantity, start_time=start_time, end_time=end_time, volume_profile=volume_profile)
+                trades = vwap.execute(st.session_state.exchange, side="BUY")
+                st.session_state.trade_history = trades
+            elif execution_algorithm == "Implementation Shortfall":
+                is_strategy = ImplementationShortfall(
+                    total_quantity=total_quantity, start_time=start_time, end_time=end_time,
+                    decision_price=st.session_state.exchange.get_order_book_state()["mid_price"] or 100.0,
+                    lambda_=0.01, sigma=volatility, risk_aversion=0.5, n_slices=n_slices
+                )
+                trades = is_strategy.execute(st.session_state.exchange, side="BUY")
+                st.session_state.trade_history = trades
+            elif execution_algorithm == "Optimal Execution":
+                oe_strategy = OptimalExecution(
+                    total_quantity=total_quantity, start_time=start_time, end_time=end_time,
+                    decision_price=st.session_state.exchange.get_order_book_state()["mid_price"] or 100.0,
+                    sigma=volatility, lambda_=0.01, eta=0.005, risk_aversion=0.5, n_slices=n_slices
+                )
+                trades = oe_strategy.execute(st.session_state.exchange, side="BUY")
+                st.session_state.trade_history = trades
 
-        st.success(f"✅ Executed {len(trades)} trades using {execution_algorithm}!")
+            st.success(f"✅ Executed {len(trades)} trades using {execution_algorithm}!")
 
-    if st.session_state.trade_history:
-        trades_df = pd.DataFrame(st.session_state.trade_history)
-        st.write("### Trade History")
-        st.dataframe(trades_df, use_container_width=True)
+        if st.session_state.trade_history:
+            trades_df = pd.DataFrame(st.session_state.trade_history)
+            st.write("### Trade History")
+            st.dataframe(trades_df, use_container_width=True)
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=trades_df.index, y=trades_df["price"], mode="lines+markers", name="Execution Price"))
-        fig.update_layout(title=f"{execution_algorithm} Execution Prices", height=400)
-        st.plotly_chart(fig, use_container_width=True)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=trades_df.index, y=trades_df["price"], mode="lines+markers", name="Execution Price"))
+            fig.update_layout(title=f"{execution_algorithm} Execution Prices", height=400)
+            st.plotly_chart(fig, use_container_width=True)
 
-        avg_price = trades_df["price"].mean()
-        total_volume = trades_df["quantity"].sum()
-        price_std = trades_df["price"].std()
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Average Execution Price", f"{avg_price:.2f}")
-        col2.metric("Total Volume Executed", f"{total_volume:,}")
-        col3.metric("Price Volatility", f"{price_std:.4f}")
+            avg_price = trades_df["price"].mean()
+            total_volume = trades_df["quantity"].sum()
+            price_std = trades_df["price"].std()
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Average Execution Price", f"{avg_price:.2f}")
+            col2.metric("Total Volume Executed", f"{total_volume:,}")
+            col3.metric("Price Volatility", f"{price_std:.4f}")
 
 # ======================================================================
 # Aba 4: Simulation Control
