@@ -52,9 +52,9 @@ except ImportError:
 # ----------------------------------------------------------------------
 # Imports do Q-Micro original
 from core.exchange_simulator import ExchangeSimulator
-from core.order import Side, OrderType          # Correção: Side, não OrderSide
+from core.order import Side, OrderType
+# Removida a linha: from microstructure.liquidity import OrderFlowImbalance, AmihudIlliquidity
 from microstructure.spread_model import SpreadModel
-from microstructure.liquidity import OrderFlowImbalance, AmihudIlliquidity
 from microstructure.kyle_lambda import KyleLambda
 from microstructure.vpin import VPIN
 from execution.twap import TWAP
@@ -309,7 +309,7 @@ with tabs[4]:
         st.session_state.synthetic_generator = SyntheticMarketGenerator(n_traders=n_traders, initial_price=initial_price)
         orders = st.session_state.synthetic_generator.generate_order_flow(n_orders)
         for order in orders:
-            side = Side.BUY if order["side"] == "BUY" else Side.SELL  # Correção: Side, não OrderSide
+            side = Side.BUY if order["side"] == "BUY" else Side.SELL
             st.session_state.exchange.submit_order(
                 trader_id=order["trader_id"], side=side,
                 price=order["price"], quantity=order["quantity"], order_type=OrderType.LIMIT
@@ -384,4 +384,4 @@ with tabs[6]:
         col3.metric("CPU", f"{perf['cpu_percent']:.1f}%")
         col4.metric("Memória", f"{perf['memory_percent']:.1f}%")
         st.write("**Contagem de eventos:**")
-        st.json(perf['event_counts']) 
+        st.json(perf['event_counts'])
