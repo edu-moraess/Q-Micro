@@ -58,12 +58,6 @@ from data.synthetic_generator import SyntheticMarketGenerator
 # ----------------------------------------------------------------------
 # Módulos de microestrutura (importação condicional)
 try:
-    from microstructure.spread_model import SpreadModel
-    SPREAD_AVAILABLE = True
-except ImportError:
-    SPREAD_AVAILABLE = False
-
-try:
     from microstructure.kyle_lambda import KyleLambda
     KYLE_AVAILABLE = True
 except ImportError:
@@ -92,7 +86,11 @@ st.set_page_config(page_title="Q-Micro Terminal", layout="wide")
 # ----------------------------------------------------------------------
 # Inicializa simulador sintético
 if "exchange" not in st.session_state:
-    st.session_state.exchange = ExchangeSimulator()
+    try:
+        st.session_state.exchange = ExchangeSimulator()
+    except Exception as e:
+        st.error(f"Falha ao inicializar ExchangeSimulator: {e}")
+        st.stop()
     st.session_state.synthetic_generator = SyntheticMarketGenerator()
     st.session_state.trade_history = []
     st.session_state.order_book_history = []
@@ -136,13 +134,47 @@ if "playback_ctrl" not in st.session_state and REPLAY_AVAILABLE:
     st.session_state.replay_playing = False
 
 # ----------------------------------------------------------------------
+# Função auxiliar para obter estado do book de forma segura
+def get_order_book_state(exchange):
+    """Retorna um dicionário com best_bid, best_ask, mid_price, spread, buy_depth, sell_depth."""
+    try:
+        # Tenta o método original
+        if hasattr(exchange, 'get_order_book_state'):
+            return exchange.get_order_book_state()
+        # Fallback: constrói a partir dos atributos acessíveis
+        ob = exchange.order_book
+        best_bid = max(ob.bids.keys()) if ob.bids else None
+        best_ask = min(ob.asks.keys()) if ob.asks else None
+        mid = (best_bid + best_ask) / 2 if best_bid and best_ask else None
+        spread = (best_ask - best_bid) if best_bid and best_ask else None
+        buy_depth = [(price, qty) for price, qty in sorted(ob.bids.items(), reverse=True)[:5]] if ob.bids else []
+        sell_depth = [(price, qty) for price, qty in sorted(ob.asks.items())[:5]] if ob.asks else []
+        return {
+            'best_bid': best_bid,
+            'best_ask': best_ask,
+            'mid_price': mid,
+            'spread': spread,
+            'buy_depth': buy_depth,
+            'sell_depth': sell_depth
+        }
+    except Exception as e:
+        st.warning(f"Não foi possível obter o estado do livro de ofertas: {e}")
+        return {
+            'best_bid': None, 'best_ask': None, 'mid_price': None, 'spread': None,
+            'buy_depth': [], 'sell_depth': []
+        }
+
+# ----------------------------------------------------------------------
 # Sidebar
 with st.sidebar:
     st.title("🎛️ Q-Micro Controls")
 
     st.header("Simulation")
     if st.button("🔄 Reset Simulation"):
-        st.session_state.exchange = ExchangeSimulator()
+        try:
+            st.session_state.exchange = ExchangeSimulator()
+        except Exception as e:
+            st.error(f"Erro ao resetar simulação: {e}")
         st.session_state.trade_history = []
         st.session_state.order_book_history = []
         st.rerun()
@@ -206,7 +238,7 @@ with tabs[0]:
 # ======================================================================
 with tabs[1]:
     st.header("Order Book Visualization")
-    ob_state = st.session_state.exchange.get_order_book_state()
+    ob_state = get_order_book_state(st.session_state.exchange)
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Best Bid", f"{ob_state['best_bid']:.2f}" if ob_state['best_bid'] else "N/A")
@@ -241,9 +273,16 @@ with tabs[2]:
 
     if not KYLE_AVAILABLE or not VPIN_AVAILABLE:
         st.warning("Algumas métricas de microestrutura não estão disponíveis (módulos ausentes).")
-    
-    if len(st.session_state.exchange.order_book.trades) > 0:
-        trades_df = pd.DataFrame(st.session_state.exchange.order_book.trades)
+
+    # Tenta acessar a lista de trades
+    trades_list = []
+    try:
+        trades_list = st.session_state.exchange.order_book.trades
+    except AttributeError:
+        pass
+
+    if len(trades_list) > 0:
+        trades_df = pd.DataFrame(trades_list)
         buy_volume = trades_df[trades_df["buyer"] == "RL_AGENT"]["quantity"].sum()
         sell_volume = trades_df[trades_df["seller"] == "RL_AGENT"]["quantity"].sum()
         ofi = (buy_volume - sell_volume) / (buy_volume + sell_volume + 1e-6)
@@ -251,7 +290,7 @@ with tabs[2]:
         vpin_value = None
         if VPIN_AVAILABLE:
             vpin = VPIN(bucket_size=10)
-            vpin_value = vpin.compute_vpin_from_trades(st.session_state.exchange.order_book.trades)
+            vpin_value = vpin.compute_vpin_from_trades(trades_list)
 
         kyle_impact = None
         if KYLE_AVAILABLE:
@@ -288,6 +327,10 @@ with tabs[3]:
             start_time = datetime.now()
             end_time = start_time + timedelta(minutes=30)
 
+            # Preço de decisão: tentar obter mid_price do estado atual
+            ob_state = get_order_book_state(st.session_state.exchange)
+            decision_price = ob_state['mid_price'] or 100.0
+
             if execution_algorithm == "TWAP":
                 twap = TWAP(total_quantity=total_quantity, start_time=start_time, end_time=end_time, n_slices=n_slices)
                 trades = twap.execute(st.session_state.exchange, side="BUY")
@@ -300,7 +343,7 @@ with tabs[3]:
             elif execution_algorithm == "Implementation Shortfall":
                 is_strategy = ImplementationShortfall(
                     total_quantity=total_quantity, start_time=start_time, end_time=end_time,
-                    decision_price=st.session_state.exchange.get_order_book_state()["mid_price"] or 100.0,
+                    decision_price=decision_price,
                     lambda_=0.01, sigma=volatility, risk_aversion=0.5, n_slices=n_slices
                 )
                 trades = is_strategy.execute(st.session_state.exchange, side="BUY")
@@ -308,7 +351,7 @@ with tabs[3]:
             elif execution_algorithm == "Optimal Execution":
                 oe_strategy = OptimalExecution(
                     total_quantity=total_quantity, start_time=start_time, end_time=end_time,
-                    decision_price=st.session_state.exchange.get_order_book_state()["mid_price"] or 100.0,
+                    decision_price=decision_price,
                     sigma=volatility, lambda_=0.01, eta=0.005, risk_aversion=0.5, n_slices=n_slices
                 )
                 trades = oe_strategy.execute(st.session_state.exchange, side="BUY")
