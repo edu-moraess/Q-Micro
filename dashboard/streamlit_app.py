@@ -91,7 +91,20 @@ if "exchange" not in st.session_state:
     except Exception as e:
         st.error(f"Falha ao inicializar ExchangeSimulator: {e}")
         st.stop()
-    st.session_state.synthetic_generator = SyntheticMarketGenerator()
+    st.session_state.synthetic_generator = None
+    st.session_state.generator_error = None
+    # Tenta criar o gerador sintético de forma resiliente
+    try:
+        # Tenta com argumentos nomeados
+        st.session_state.synthetic_generator = SyntheticMarketGenerator(n_traders=10, initial_price=100.0)
+    except TypeError:
+        try:
+            # Tenta sem argumentos (construtor padrão)
+            st.session_state.synthetic_generator = SyntheticMarketGenerator()
+        except Exception as e:
+            st.session_state.generator_error = str(e)
+    except Exception as e:
+        st.session_state.generator_error = str(e)
     st.session_state.trade_history = []
     st.session_state.order_book_history = []
 
@@ -138,10 +151,8 @@ if "playback_ctrl" not in st.session_state and REPLAY_AVAILABLE:
 def get_order_book_state(exchange):
     """Retorna um dicionário com best_bid, best_ask, mid_price, spread, buy_depth, sell_depth."""
     try:
-        # Tenta o método original
         if hasattr(exchange, 'get_order_book_state'):
             return exchange.get_order_book_state()
-        # Fallback: constrói a partir dos atributos acessíveis
         ob = exchange.order_book
         best_bid = max(ob.bids.keys()) if ob.bids else None
         best_ask = min(ob.asks.keys()) if ob.asks else None
@@ -274,7 +285,6 @@ with tabs[2]:
     if not KYLE_AVAILABLE or not VPIN_AVAILABLE:
         st.warning("Algumas métricas de microestrutura não estão disponíveis (módulos ausentes).")
 
-    # Tenta acessar a lista de trades
     trades_list = []
     try:
         trades_list = st.session_state.exchange.order_book.trades
@@ -327,7 +337,6 @@ with tabs[3]:
             start_time = datetime.now()
             end_time = start_time + timedelta(minutes=30)
 
-            # Preço de decisão: tentar obter mid_price do estado atual
             ob_state = get_order_book_state(st.session_state.exchange)
             decision_price = ob_state['mid_price'] or 100.0
 
@@ -382,9 +391,22 @@ with tabs[3]:
 # ======================================================================
 with tabs[4]:
     st.header("Simulation Control")
+    if st.session_state.synthetic_generator is None:
+        st.warning(f"Gerador sintético não disponível: {st.session_state.generator_error}")
+        st.stop()
     if st.button("🎲 Generate Synthetic Orders"):
         n_orders = st.slider("Number of Orders", 10, 1000, 100, key="n_orders")
-        st.session_state.synthetic_generator = SyntheticMarketGenerator(n_traders=n_traders, initial_price=initial_price)
+        try:
+            # Tenta recriar o gerador com os parâmetros da sidebar, mas se falhar usa o existente
+            st.session_state.synthetic_generator = SyntheticMarketGenerator(n_traders=n_traders, initial_price=initial_price)
+        except TypeError:
+            # Se não aceitar argumentos, mantém o que já existe (ou tenta sem argumentos)
+            try:
+                st.session_state.synthetic_generator = SyntheticMarketGenerator()
+            except Exception:
+                pass
+        except Exception:
+            pass  # mantém o anterior
         orders = st.session_state.synthetic_generator.generate_order_flow(n_orders)
         for order in orders:
             side = Side.BUY if order["side"] == "BUY" else Side.SELL
